@@ -1,0 +1,70 @@
+name: Build-Test
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sonarqube:
+    environment: SCORING
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      PERSONAL_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
+      PROJECT_ID: ${{ github.event.repository.name }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v1
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.10.9
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      - name: Test with pytest
+        run: |
+          pip install pytest pytest-json-report
+          pytest --json-report --json-report-file=output.json --json-report-indent=4
+
+      - name: Update solution
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          result-encoding: string
+          script: |
+            try {
+              const fs = require('fs')
+              const jsonString = fs.readFileSync('./output.json')
+              const output = JSON.parse(jsonString)
+              const assertionResults = []
+              output.tests.forEach((objective, i) => {
+                if (objective.outcome === 'passed') assertionResults.push(i)
+              })
+              console.log('Updating score...')
+              await github.request(`PATCH https://api.nuwe.io/projects/${process.env.PROJECT_ID}/objectives`, {
+                bearerToken: process.env.PERSONAL_TOKEN, 
+                assertionResults
+              })
+              console.log('Done')
+            } catch(err) {
+              core.error("Error while reading or parsing the output JSON")
+              core.setFailed(err)
+            }
+
+      - name: SonarQube Scan 🚨
+        if: always()
+        uses: sonarsource/sonarqube-scan-action@master
+        with:
+          args: >
+            -Dsonar.projectKey=${{ github.event.repository.name }}
